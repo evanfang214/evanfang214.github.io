@@ -1,3 +1,10 @@
+<script
+  src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"
+  type="text/javascript">
+</script>
+
+[_homepage_](https://evanfang214.github.io/)
+
 ## RULES OF BS-ZPY
 _created by Alice Nie_
 
