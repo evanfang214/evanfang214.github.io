@@ -51,4 +51,4 @@ For example, suppose the attacking score is 105 and the dictator score is 195 pl
 
 $$\Delta = \left\lfloor{\dfrac{-80}{60}}\right\rfloor + 1 = -1$$
 
-which means the dictator team goes up by $1$ level. 
+which means the dictator team goes up by 1 level. 
