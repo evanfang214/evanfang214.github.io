@@ -45,10 +45,10 @@ Due to the penalties of losing points and stealing cards from the winning pile b
 # Level Up 
 For $n$ decks the interval change is determined by
 
-$$\delta = \lfloor{\dfrac{\text{Attacking Score} - \text{Dictator Score}}{20n}}\rfloor + 1$$
+$$\Delta = \left\lfloor{\dfrac{\text{Attacking Score} - \text{Dictator Score}}{20n}}\right\rfloor + 1$$
 
 For example, suppose the attacking score is $105$ and the dictator score is $195$ playing with $3$ decks. Then 
 
-$$\delta = \lfloor{\dfrac{-80}{60}}\rfloor + 1 = -1$$
+$$\Delta = \left\lfloor{\dfrac{-80}{60}}\right\rfloor + 1 = -1$$
 
 which means the dictator team goes up by $1$ level. 
