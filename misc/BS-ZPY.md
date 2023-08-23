@@ -5,14 +5,14 @@
 
 [_homepage_](https://evanfang214.github.io/)
 
-## RULES OF BS-ZPY
+# RULES OF BS-ZPY
 _created by Alice Nie_
 
 The rules of BS-ZPY compared against normal ZPY. If you don't know the rules of normal ZPY refer to [this page](https://robertying.com/shengji/rules.html).
 
 The main difference lies in how tricks are played so we'll start by explaining that.
 
-# Playing Tricks
+## Playing Tricks
 The general idea is that every person will play cards face down and will claim what the facedown cards are similar to the card game [BS](https://en.wikipedia.org/wiki/Cheat_(game))
 
 Before the next player plays any card any player can call `BS`. If `BS` is called, the cards must be revealed.
@@ -29,20 +29,20 @@ If every single person before the last person is caught lying then no one can ca
 
 Unless `BS` is called, cards are _not revealed_ at the end of the trick. Instead, the person who wins the trick by claiming the highest hand wins all the cards played that turn. The eventual score is equal to the number of points in the winning pile.
 
-# Bidding For Trump, Exchanging Cards in Bottom (底牌)
+## Bidding For Trump, Exchanging Cards in Bottom (底牌)
 Happens as normal.
 
-# Declaring Friends
+## Declaring Friends
 The dictator will declare friend cards as normal. However, the person to join their team will be the first person to successfully claim playing the friend card. 
 
 For instance, suppose player A is dictator and declares the first A♠ is their friend. Then in some round player B plays the 10♠ while claiming it is the A♠ and nobody calls `BS`. Then player B would be player A's friend even though player B never actually played A♠.
 
-# Scoring
+## Scoring
 As detailed before, the score is equal to the number of points in the winning pile subtracted by any other point penalties which may have occured. 底牌 is counted as normal.
 
 Due to the penalties of losing points and stealing cards from the winning pile both the dictator and attacking team will keep track of their points. 
 
-# Level Up 
+## Level Up 
 For n decks the interval change is determined by
 
 $$\Delta = \left\lfloor{\dfrac{\text{Attacking Score} - \text{Dictator Score}}{20n}}\right\rfloor + 1$$
