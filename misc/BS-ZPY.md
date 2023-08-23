@@ -23,7 +23,7 @@ Before the next player plays any card any player can call `BS`. If `BS` is calle
 
 In the case no one calls `BS` for that trick the face down cards are considered to be what that player claimed. If the player was lying they must say `peanut butter`. 
 
-Suppose `BS` is called on the first person and the first person is playing an invalid hand. In this case take the _smallest_ valued hand which is a subset of the hand which they played and return the other hands back into their hand. 
+Suppose `BS` is called on the first person and the first person is playing an invalid hand. In this case take the _lowest valid_ hand which is a subset of the hand which they played and return the other hands back into their hand. 
 
 If every single person before the last person is caught lying then no one can call `BS` on the last person. 
 
