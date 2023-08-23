@@ -43,11 +43,11 @@ As detailed before, the score is equal to the number of points in the winning pi
 Due to the penalties of losing points and stealing cards from the winning pile both the dictator and attacking team will keep track of their points. 
 
 # Level Up 
-For $n$ decks the interval change is determined by
+For n decks the interval change is determined by
 
 $$\Delta = \left\lfloor{\dfrac{\text{Attacking Score} - \text{Dictator Score}}{20n}}\right\rfloor + 1$$
 
-For example, suppose the attacking score is $105$ and the dictator score is $195$ playing with $3$ decks. Then 
+For example, suppose the attacking score is 105 and the dictator score is 195 playing with 3 decks. Then 
 
 $$\Delta = \left\lfloor{\dfrac{-80}{60}}\right\rfloor + 1 = -1$$
 
