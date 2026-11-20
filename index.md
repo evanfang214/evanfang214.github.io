@@ -5,3 +5,5 @@ I won't promise anything more until I actually do more stuff.
 Recent Posts
 [BS-ZPY Rules](https://evanfang214.github.io/misc/BS-ZPY)
 
+Projects
+[Selah — Bible Verse Memorization](https://evanfang214.github.io/bible-memory/)
