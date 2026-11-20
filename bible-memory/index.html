@@ -33,12 +33,12 @@
           <button type="button" class="seg-btn" data-translation="NIV" title="New International Version">NIV</button>
         </div>
 
-        <button type="button" class="icon-text-btn" id="open-custom-btn" title="Add verse or connect ESV API">
+        <button type="button" class="icon-text-btn" id="open-custom-btn" title="Look up or paste any verse">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
-          <span>Add / ESV API</span>
+          <span>Look Up</span>
         </button>
 
         <button type="button" class="icon-text-btn" id="open-library-btn" title="Browse verses &amp; mastery progress">
@@ -70,12 +70,13 @@
       <!-- Category & Streak Bar -->
       <section class="filter-bar" aria-label="Verse topic filters">
         <div class="category-pills" id="category-pills">
-          <button type="button" class="pill active" data-category="All">All Verses</button>
-          <button type="button" class="pill" data-category="Comfort & Peace">Comfort &amp; Peace</button>
+          <button type="button" class="pill active" data-category="All">Curated</button>
+          <button type="button" class="pill" data-category="Entire Bible">Entire Bible</button>
+          <button type="button" class="pill" data-category="Comfort & Peace">Comfort</button>
           <button type="button" class="pill" data-category="Strength & Courage">Strength</button>
           <button type="button" class="pill" data-category="Wisdom & Guidance">Wisdom</button>
-          <button type="button" class="pill" data-category="Faith & Hope">Faith &amp; Hope</button>
-          <button type="button" class="pill" data-category="Love & Grace">Love &amp; Grace</button>
+          <button type="button" class="pill" data-category="Faith & Hope">Faith</button>
+          <button type="button" class="pill" data-category="Love & Grace">Love</button>
           <button type="button" class="pill" data-category="Multi-Verse">Multi-Verse</button>
         </div>
 
@@ -104,22 +105,48 @@
           </div>
 
           <div class="progress-counter">
-            <span class="counter-nums" id="word-counter">1 / 29 words</span>
+            <span class="counter-nums" id="word-counter">Loading...</span>
             <span class="counter-hints" id="hint-counter" hidden>0 hints</span>
           </div>
         </div>
 
-        <!-- Translation Setup / Loading Banner (shown when ESV/NIV text isn't cached yet) -->
-        <div class="translation-banner" id="translation-banner" hidden>
-          <div class="translation-banner-text" id="translation-banner-text">
-            Showing public-domain preview &mdash; connect a free ESV API key or paste ESV text for exact wording.
-          </div>
-          <div class="translation-banner-actions">
-            <button type="button" class="banner-btn primary" id="banner-api-btn">Connect ESV API</button>
-            <a class="banner-btn" id="banner-bg-link" href="#" target="_blank" rel="noopener noreferrer">Open on Bible Gateway &#8599;</a>
-            <button type="button" class="banner-btn" id="banner-paste-btn">Paste Text</button>
-          </div>
+        <!-- Loading State -->
+        <div class="loading-panel" id="loading-panel" hidden>
+          <span class="loading-spinner" aria-hidden="true"></span>
+          <span id="loading-text">Fetching ESV passage from Bolls Bible API...</span>
         </div>
+
+        <!-- Fallback Panel (only shown if API fails or translation is unavailable) -->
+        <section class="missing-trans-panel" id="missing-trans-panel" hidden aria-label="Paste translation text">
+          <div class="missing-trans-header">
+            <h2 class="missing-trans-title" id="missing-trans-title">Unable to fetch NIV automatically</h2>
+            <p class="missing-trans-desc" id="missing-trans-desc">
+              This translation wasn't returned by Bolls Bible API right now. You can retry, switch to ESV, or paste the exact verse text from Bible Gateway below (saved in your browser).
+            </p>
+          </div>
+
+          <div class="missing-trans-links">
+            <button type="button" class="subtle-btn" id="missing-retry-btn">Retry Fetch</button>
+            <a class="source-link primary-link" id="missing-bg-link" href="#" target="_blank" rel="noopener noreferrer">
+              <span id="missing-bg-link-label">Open on Bible Gateway</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
+            </a>
+            <button type="button" class="subtle-btn" id="missing-switch-esv-btn" hidden>Switch to ESV</button>
+          </div>
+
+          <form class="inline-paste-form" id="inline-paste-form">
+            <textarea class="text-input textarea-input" id="inline-paste-input" rows="3" placeholder="Paste the exact verse text here..." required></textarea>
+            <p class="form-error" id="inline-paste-error" hidden></p>
+            <div class="inline-paste-actions">
+              <button type="button" class="subtle-btn" id="missing-skip-btn">Try Another Verse</button>
+              <button type="submit" class="primary-btn" id="inline-paste-save-btn">Save &amp; Practice</button>
+            </div>
+          </form>
+        </section>
 
         <!-- Interactive Scripture Typing Canvas -->
         <div class="verse-canvas" id="verse-canvas" tabindex="-1" aria-label="Scripture memorization area">
@@ -209,11 +236,11 @@
           <div class="source-link-box">
             <div class="source-link-info">
               <span class="source-eyebrow">Scripture Source</span>
-              <span class="source-ref-text" id="source-ref-text">Psalm 23:4 &mdash; World English Bible</span>
+              <span class="source-ref-text" id="source-ref-text">Psalm 23:4 &mdash; English Standard Version (ESV)</span>
             </div>
             <div class="source-link-actions">
               <a class="source-link primary-link" id="source-verse-link" href="#" target="_blank" rel="noopener noreferrer">
-                <span id="source-verse-link-label">Read Psalm 23:4</span>
+                <span id="source-verse-link-label">Read Psalm 23:4 (ESV)</span>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
                   <polyline points="15 3 21 3 21 9" />
@@ -244,7 +271,7 @@
         </section>
       </article>
 
-      <!-- Subtle Legend / Shortcuts Footer -->
+      <!-- Subtle Legend & Attribution Footer -->
       <footer class="legend-bar">
         <span class="legend-item">
           <span class="dot dot-given"></span> Starting word
@@ -256,6 +283,11 @@
           <span class="dot dot-hinted"></span> Revealed via <kbd>Tab</kbd>
         </span>
       </footer>
+
+      <p class="attribution-note">
+        Passages fetched live via <a href="https://bolls.life/api/" target="_blank" rel="noopener noreferrer" class="inline-link">Bolls Bible API</a>.
+        ESV&reg; text &copy; Crossway; NIV&reg; text &copy; Biblica, Inc.
+      </p>
     </main>
   </div>
 
@@ -282,11 +314,11 @@
     <div class="library-list" id="library-list"></div>
   </aside>
 
-  <!-- Add / ESV API Modal -->
+  <!-- Look Up / Paste Custom Verse Modal -->
   <div class="modal-backdrop" id="custom-modal-backdrop" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="custom-modal-title">
       <div class="modal-header">
-        <h2 id="custom-modal-title">ESV API &amp; Custom Verses</h2>
+        <h2 id="custom-modal-title">Practice Any Verse</h2>
         <button type="button" class="icon-btn" id="close-custom-btn" aria-label="Close modal">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="18" y1="6" x2="6" y2="18" />
@@ -296,33 +328,24 @@
       </div>
 
       <div class="modal-tabs" role="tablist">
-        <button type="button" class="modal-tab active" data-tab="esv-api" role="tab" aria-selected="true">ESV API Lookup</button>
-        <button type="button" class="modal-tab" data-tab="paste" role="tab" aria-selected="false">Paste ESV / NIV</button>
+        <button type="button" class="modal-tab active" data-tab="lookup" role="tab" aria-selected="true">Look Up Verse</button>
+        <button type="button" class="modal-tab" data-tab="paste" role="tab" aria-selected="false">Paste Text</button>
       </div>
 
-      <!-- Tab 1: Official ESV API Setup & Lookup -->
+      <!-- Tab 1: Look Up via Bolls Bible API -->
       <form class="modal-form" id="lookup-form">
-        <label class="field-label" for="esv-token-input">ESV API Token (saved locally)</label>
-        <div class="token-row">
-          <input type="password" class="text-input" id="esv-token-input" placeholder="Paste your free token from api.esv.org" autocomplete="off" />
-          <button type="button" class="subtle-btn" id="save-token-btn">Save Key</button>
-        </div>
-        <p class="field-help">
-          Get a free personal key at <a href="https://api.esv.org/" target="_blank" rel="noopener noreferrer" class="inline-link">api.esv.org</a>. Once saved, all random ESV verses auto-load in exact ESV wording.
-        </p>
-
-        <label class="field-label" for="lookup-ref-input">Look Up Any ESV Passage (optional)</label>
-        <input type="text" class="text-input" id="lookup-ref-input" placeholder="e.g. Psalm 23:4, Romans 5:1-5, John 1:1" />
-        <p class="form-success" id="lookup-success" hidden></p>
+        <label class="field-label" for="lookup-ref-input">Bible Reference</label>
+        <input type="text" class="text-input" id="lookup-ref-input" placeholder="e.g. Psalm 23:4, Romans 5:1-5, 1 Cor 13:4-7" required />
+        <p class="field-help">Fetches exact text directly from Bolls Bible API in your selected translation (<strong id="lookup-trans-hint">ESV</strong>).</p>
         <p class="form-error" id="lookup-error" hidden></p>
 
         <div class="modal-footer">
-          <button type="button" class="subtle-btn" id="cancel-lookup-btn">Close</button>
-          <button type="submit" class="primary-btn" id="lookup-submit-btn">Load ESV Passage</button>
+          <button type="button" class="subtle-btn" id="cancel-lookup-btn">Cancel</button>
+          <button type="submit" class="primary-btn" id="lookup-submit-btn">Load Passage</button>
         </div>
       </form>
 
-      <!-- Tab 2: Paste ESV / NIV Verse -->
+      <!-- Tab 2: Paste Custom Verse -->
       <form class="modal-form" id="paste-form" hidden>
         <div class="paste-top-row">
           <div class="paste-field-grow">
@@ -339,10 +362,10 @@
         </div>
 
         <label class="field-label" for="paste-text-input">Verse Text</label>
-        <textarea class="text-input textarea-input" id="paste-text-input" rows="4" placeholder="Paste the ESV or NIV verse text here..." required></textarea>
+        <textarea class="text-input textarea-input" id="paste-text-input" rows="4" placeholder="Paste the exact ESV or NIV verse text here..." required></textarea>
 
         <p class="field-help">
-          Saved in your browser for offline practice. Need the text?
+          Saved in your browser for offline practice. Need exact text?
           <a href="https://www.biblegateway.com/" target="_blank" rel="noopener noreferrer" class="inline-link" id="paste-bg-helper">Open Bible Gateway &#8599;</a>
         </p>
         <p class="form-error" id="paste-error" hidden></p>

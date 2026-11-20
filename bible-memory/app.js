@@ -1,23 +1,28 @@
 /**
  * Selah — Random Bible Verse Memorization App
- * Default translation: ESV, with ESV & NIV support.
- * Pure vanilla JS, zero dependencies, works offline & online.
+ * Default translation: ESV, with ESV & NIV support via Bolls Bible API (https://bolls.life/api/).
+ * Strictly displays only genuine text for the selected translation.
  */
 
 (function () {
   'use strict';
 
   const STORAGE_KEYS = {
-    prefs: 'selah_prefs_v2',
+    prefs: 'selah_prefs_v4',
     progress: 'selah_progress_v1',
-    customVerses: 'selah_custom_verses_v1',
-    esvToken: 'selah_esv_token_v1',
-    translationCache: 'selah_translation_cache_v1'
+    customVerses: 'selah_custom_verses_v2',
+    verseCache: 'selah_bolls_cache_v1'
   };
 
   const TRANSLATION_NAMES = {
     ESV: 'English Standard Version (ESV)',
     NIV: 'New International Version (NIV)'
+  };
+
+  // Candidate translation slugs on bolls.life
+  const BOLLS_SLUGS = {
+    ESV: ['ESV'],
+    NIV: ['NIV', 'NIV2011']
   };
 
   /* ------------------------------------------------------------------------
@@ -31,14 +36,16 @@
     autoConfirm: true,
     sessionCompleted: 0,
 
-    esvToken: '',
-    translationCache: {}, // { [verseId]: { ESV?: Segment[], NIV?: Segment[] } }
+    verseCache: {}, // { [verseId]: { ESV?: Segment[], NIV?: Segment[] } }
+    chapterCache: {}, // in-memory: { "ESV:19:23": Array<{ verse, text }> }
     customVerses: [],
     progress: {}, // { [verseId]: { bestAccuracy: number, completions: number } }
 
     shuffleBag: [],
     currentVerse: null,
     currentLoadId: 0,
+    isLoading: false,
+    isMissingTranslation: false,
     tokens: [],
     currentIndex: 0,
     hintsUsed: 0,
@@ -62,11 +69,20 @@
     wordCounter: document.getElementById('word-counter'),
     hintCounter: document.getElementById('hint-counter'),
 
-    translationBanner: document.getElementById('translation-banner'),
-    translationBannerText: document.getElementById('translation-banner-text'),
-    bannerApiBtn: document.getElementById('banner-api-btn'),
-    bannerBgLink: document.getElementById('banner-bg-link'),
-    bannerPasteBtn: document.getElementById('banner-paste-btn'),
+    loadingPanel: document.getElementById('loading-panel'),
+    loadingText: document.getElementById('loading-text'),
+
+    missingTransPanel: document.getElementById('missing-trans-panel'),
+    missingTransTitle: document.getElementById('missing-trans-title'),
+    missingTransDesc: document.getElementById('missing-trans-desc'),
+    missingRetryBtn: document.getElementById('missing-retry-btn'),
+    missingBgLink: document.getElementById('missing-bg-link'),
+    missingBgLinkLabel: document.getElementById('missing-bg-link-label'),
+    missingSwitchEsvBtn: document.getElementById('missing-switch-esv-btn'),
+    inlinePasteForm: document.getElementById('inline-paste-form'),
+    inlinePasteInput: document.getElementById('inline-paste-input'),
+    inlinePasteError: document.getElementById('inline-paste-error'),
+    missingSkipBtn: document.getElementById('missing-skip-btn'),
 
     verseCanvas: document.getElementById('verse-canvas'),
     verseFlow: document.getElementById('verse-flow'),
@@ -105,16 +121,14 @@
     librarySearch: document.getElementById('library-search'),
     libraryList: document.getElementById('library-list'),
 
-    // Custom / ESV API modal
+    // Look Up / Paste modal
     openCustomBtn: document.getElementById('open-custom-btn'),
     closeCustomBtn: document.getElementById('close-custom-btn'),
     customModalBackdrop: document.getElementById('custom-modal-backdrop'),
     modalTabs: document.querySelectorAll('.modal-tab'),
     lookupForm: document.getElementById('lookup-form'),
-    esvTokenInput: document.getElementById('esv-token-input'),
-    saveTokenBtn: document.getElementById('save-token-btn'),
     lookupRefInput: document.getElementById('lookup-ref-input'),
-    lookupSuccess: document.getElementById('lookup-success'),
+    lookupTransHint: document.getElementById('lookup-trans-hint'),
     lookupError: document.getElementById('lookup-error'),
     lookupSubmitBtn: document.getElementById('lookup-submit-btn'),
     cancelLookupBtn: document.getElementById('cancel-lookup-btn'),
@@ -128,9 +142,9 @@
     cancelPasteBtn: document.getElementById('cancel-paste-btn')
   };
 
-  // Persistent inline input elements inside verseFlow
   let activeInputWrap = null;
   let wordInput = null;
+  const htmlDecoder = document.createElement('textarea');
 
   /* ------------------------------------------------------------------------
    * Utilities
@@ -147,6 +161,32 @@
     return match ? match[0] : '';
   }
 
+  function cleanBollsHtml(rawHtml) {
+    if (!rawHtml) return '';
+    const stripped = String(rawHtml)
+      .replace(/<S>[\s\S]*?<\/S>/gi, '')
+      .replace(/<sup>[\s\S]*?<\/sup>/gi, '')
+      .replace(/<br\s*\/?>/gi, ' ')
+      .replace(/<[^>]+>/g, '');
+
+    htmlDecoder.innerHTML = stripped;
+    return htmlDecoder.value
+      .replace(/\u00a0/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function isRestrictionNotice(text) {
+    const lower = (text || '').toLowerCase();
+    return (
+      lower.includes('bolls.life') ||
+      lower.includes('biblica') ||
+      lower.includes('copyright restrictions') ||
+      lower.includes('not available due to') ||
+      lower.includes('publisher request')
+    );
+  }
+
   function shuffleArray(arr) {
     const copy = arr.slice();
     for (let i = copy.length - 1; i > 0; i--) {
@@ -156,6 +196,63 @@
       copy[j] = tmp;
     }
     return copy;
+  }
+
+  function resolveBookId(bookName) {
+    const clean = (bookName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (BOOK_ALIASES[clean]) return BOOK_ALIASES[clean];
+    for (let i = 1; i < BIBLE_BOOKS.length; i++) {
+      const candidate = BIBLE_BOOKS[i].toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (candidate === clean || candidate.startsWith(clean)) {
+        return i;
+      }
+    }
+    return null;
+  }
+
+  function parseReference(reference) {
+    // Matches "Psalm 23:4", "1 Cor 13:4-7", "Romans 8:28", "Psalm 23:1, 4"
+    const m = reference.trim().match(/^(.+?)\s+(\d+):([\d\s,\-–]+)$/);
+    if (!m) return null;
+
+    const bookId = resolveBookId(m[1].trim());
+    if (!bookId) return null;
+
+    const chapter = parseInt(m[2], 10);
+    const verseSpec = m[3].trim();
+    const verseSet = new Set();
+
+    verseSpec.split(',').forEach((part) => {
+      const range = part.trim().split(/[-–]/);
+      if (range.length === 1) {
+        const n = parseInt(range[0], 10);
+        if (!Number.isNaN(n) && n > 0) verseSet.add(n);
+      } else if (range.length === 2) {
+        const start = parseInt(range[0], 10);
+        const end = parseInt(range[1], 10);
+        if (!Number.isNaN(start) && !Number.isNaN(end) && start > 0 && end >= start) {
+          const capEnd = Math.min(end, start + 19); // cap at 20 verses per passage
+          for (let v = start; v <= capEnd; v++) verseSet.add(v);
+        }
+      }
+    });
+
+    const verses = Array.from(verseSet).sort((a, b) => a - b);
+    if (verses.length === 0) return null;
+
+    const book = BIBLE_BOOKS[bookId];
+    const displayRange = verses.length === 1
+      ? String(verses[0])
+      : `${verses[0]}-${verses[verses.length - 1]}`;
+
+    return {
+      bookId,
+      book,
+      chapter,
+      verses,
+      reference: `${book} ${chapter}:${displayRange}`,
+      isMultiVerse: verses.length > 1
+    };
   }
 
   function parseBookAndChapter(reference) {
@@ -182,33 +279,50 @@
     return { verseUrl, chapterUrl, chapterRef };
   }
 
-  function parseBracketedVerses(rawText) {
-    // Parses ESV API output like "[1] The Lord is my shepherd... [2] He makes me..."
-    const cleaned = rawText.replace(/\s+/g, ' ').trim();
-    const parts = cleaned.split(/\[(\d+)\]\s*/);
+  function parsePastedPassage(rawText) {
+    const cleaned = rawText
+      .replace(/\[[a-zA-Z]\]/g, '')
+      .replace(/\r?\n/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
 
-    if (parts.length <= 1) {
-      return [{ num: null, text: cleaned }];
+    if (/\[\d+\]/.test(cleaned)) {
+      const parts = cleaned.split(/\[(\d+)\]\s*/);
+      const segments = [];
+      for (let i = 1; i < parts.length; i += 2) {
+        const num = parseInt(parts[i], 10);
+        const text = (parts[i + 1] || '').trim();
+        if (text) segments.push({ num: Number.isNaN(num) ? null : num, text });
+      }
+      if (segments.length > 0) return segments;
     }
 
-    const segments = [];
-    for (let i = 1; i < parts.length; i += 2) {
-      const num = parseInt(parts[i], 10);
-      const text = (parts[i + 1] || '').trim();
-      if (text) {
-        segments.push({ num: Number.isNaN(num) ? null : num, text });
+    const leadingMatch = cleaned.match(/^(\d+)\s+(.+)$/);
+    if (leadingMatch) {
+      const firstNum = parseInt(leadingMatch[1], 10);
+      const segments = [];
+      const regex = /(?:^|\s)(\d{1,3})\s+/g;
+      const hits = [];
+      let m;
+      let expectedNext = firstNum;
+      while ((m = regex.exec(cleaned)) !== null) {
+        const num = parseInt(m[1], 10);
+        if (num === expectedNext) {
+          hits.push({ num, start: m.index, textStart: m.index + m[0].length });
+          expectedNext += 1;
+        }
+      }
+      if (hits.length > 0) {
+        for (let i = 0; i < hits.length; i++) {
+          const end = i + 1 < hits.length ? hits[i + 1].start : cleaned.length;
+          const text = cleaned.slice(hits[i].textStart, end).trim();
+          if (text) segments.push({ num: hits[i].num, text });
+        }
+        if (segments.length > 0) return segments;
       }
     }
-    return segments.length > 0 ? segments : [{ num: null, text: cleaned }];
-  }
 
-  function parsePastedPassage(rawText) {
-    // Supports either plain text or text with leading/inline verse numbers like "5 Trust... 6 In all..."
-    const normalized = rawText.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ').trim();
-    if (/^\[\d+\]/.test(normalized)) {
-      return parseBracketedVerses(normalized);
-    }
-    return [{ num: null, text: normalized }];
+    return [{ num: null, text: cleaned }];
   }
 
   function announce(message) {
@@ -245,19 +359,14 @@
         if (Array.isArray(parsed)) state.customVerses = parsed;
       }
 
-      const savedToken = localStorage.getItem(STORAGE_KEYS.esvToken);
-      if (savedToken) state.esvToken = savedToken;
-
-      const rawCache = localStorage.getItem(STORAGE_KEYS.translationCache);
+      const rawCache = localStorage.getItem(STORAGE_KEYS.verseCache);
       if (rawCache) {
         const parsedCache = JSON.parse(rawCache);
         if (parsedCache && typeof parsedCache === 'object') {
-          state.translationCache = parsedCache;
+          state.verseCache = parsedCache;
         }
       }
-    } catch (_) {
-      // Ignore storage errors in private browsing / restricted file contexts
-    }
+    } catch (_) {}
   }
 
   function savePrefs() {
@@ -284,61 +393,123 @@
     } catch (_) {}
   }
 
-  function saveEsvToken() {
+  function saveVerseCache() {
     try {
-      if (state.esvToken) {
-        localStorage.setItem(STORAGE_KEYS.esvToken, state.esvToken);
-      } else {
-        localStorage.removeItem(STORAGE_KEYS.esvToken);
-      }
-    } catch (_) {}
-  }
-
-  function saveTranslationCache() {
-    try {
-      localStorage.setItem(STORAGE_KEYS.translationCache, JSON.stringify(state.translationCache));
+      localStorage.setItem(STORAGE_KEYS.verseCache, JSON.stringify(state.verseCache));
     } catch (_) {}
   }
 
   /* ------------------------------------------------------------------------
-   * Official Crossway ESV API
+   * Bolls Bible API (https://bolls.life/api/)
    * ---------------------------------------------------------------------- */
-  async function fetchEsvPassage(reference, token) {
-    const params = new URLSearchParams({
-      q: reference,
-      'include-passage-references': 'false',
-      'include-verse-numbers': 'true',
-      'include-first-verse-numbers': 'true',
-      'include-footnotes': 'false',
-      'include-footnote-body': 'false',
-      'include-headings': 'false',
-      'include-short-copyright': 'false',
-      'include-passage-horizontal-lines': 'false',
-      'include-heading-horizontal-lines': 'false'
-    });
+  async function fetchChapterFromBolls(translation, bookId, chapter) {
+    const slugs = BOLLS_SLUGS[translation] || [translation];
+    let lastError = null;
 
-    const res = await fetch(`https://api.esv.org/v3/passage/text/?${params.toString()}`, {
-      headers: {
-        Authorization: `Token ${token}`
+    for (const slug of slugs) {
+      const cacheKey = `${slug}:${bookId}:${chapter}`;
+      if (state.chapterCache[cacheKey]) {
+        return state.chapterCache[cacheKey];
       }
-    });
 
-    if (res.status === 401 || res.status === 403) {
-      throw new Error('ESV API key was rejected. Double-check your token from api.esv.org.');
-    }
-    if (!res.ok) {
-      throw new Error(`ESV API request failed (${res.status}). Check the reference and try again.`);
+      try {
+        const url = `https://bolls.life/get-chapter/${encodeURIComponent(slug)}/${bookId}/${chapter}/`;
+        const res = await fetch(url);
+        if (!res.ok) {
+          lastError = new Error(`${translation} returned HTTP ${res.status}`);
+          continue;
+        }
+        const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0) {
+          lastError = new Error(`No ${translation} verses returned for that chapter.`);
+          continue;
+        }
+        const firstClean = cleanBollsHtml(data[0].text);
+        if (!firstClean || isRestrictionNotice(firstClean)) {
+          lastError = new Error(`${translation} is restricted on Bolls Bible API.`);
+          continue;
+        }
+        state.chapterCache[cacheKey] = data;
+        return data;
+      } catch (err) {
+        lastError = err;
+      }
     }
 
-    const data = await res.json();
-    if (!data || !Array.isArray(data.passages) || !data.passages[0] || !data.passages[0].trim()) {
-      throw new Error('No ESV passage found for that reference.');
+    throw lastError || new Error(`Could not fetch ${translation} from Bolls Bible API.`);
+  }
+
+  async function fetchPassageFromBolls(verse, translation) {
+    if (!verse.bookId || !verse.chapter || !Array.isArray(verse.verses)) {
+      throw new Error('Passage metadata missing for online lookup.');
     }
 
-    return {
-      canonical: data.canonical || reference,
-      segments: parseBracketedVerses(data.passages[0])
-    };
+    const chapterData = await fetchChapterFromBolls(translation, verse.bookId, verse.chapter);
+    const byNum = new Map(chapterData.map((v) => [Number(v.verse), v.text]));
+    const segments = [];
+
+    for (const vNum of verse.verses) {
+      const raw = byNum.get(Number(vNum));
+      if (!raw) continue;
+      const text = cleanBollsHtml(raw);
+      if (text && !isRestrictionNotice(text)) {
+        segments.push({ num: vNum, text });
+      }
+    }
+
+    if (segments.length === 0) {
+      throw new Error(`Could not find ${verse.reference} in ${translation}.`);
+    }
+
+    return segments;
+  }
+
+  async function fetchRandomVerseFromBolls(translation) {
+    const slugs = BOLLS_SLUGS[translation] || [translation];
+    let lastError = null;
+
+    for (const slug of slugs) {
+      try {
+        const res = await fetch(`https://bolls.life/get-random-verse/${encodeURIComponent(slug)}/`);
+        if (!res.ok) {
+          lastError = new Error(`HTTP ${res.status}`);
+          continue;
+        }
+        const data = await res.json();
+        const text = cleanBollsHtml(data && data.text);
+        if (!data || !text || isRestrictionNotice(text)) {
+          lastError = new Error(`${translation} random verse is unavailable.`);
+          continue;
+        }
+        const bookId = Number(data.book);
+        const book = BIBLE_BOOKS[bookId] || `Book ${bookId}`;
+        const chapter = Number(data.chapter);
+        const vNum = Number(data.verse);
+        const reference = `${book} ${chapter}:${vNum}`;
+        const id = `bolls-${bookId}-${chapter}-${vNum}`;
+
+        const verseObj = {
+          id,
+          reference,
+          book,
+          bookId,
+          chapter,
+          verses: [vNum],
+          category: 'Entire Bible',
+          isMultiVerse: false
+        };
+
+        if (!state.verseCache[id]) state.verseCache[id] = {};
+        state.verseCache[id][translation] = [{ num: vNum, text }];
+        saveVerseCache();
+
+        return verseObj;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    throw lastError || new Error(`Unable to fetch a random ${translation} verse.`);
   }
 
   /* ------------------------------------------------------------------------
@@ -346,6 +517,17 @@
    * ---------------------------------------------------------------------- */
   function getAllVerses() {
     return [...state.customVerses, ...BIBLE_VERSES];
+  }
+
+  function getCachedSegments(verse, translation) {
+    const cached = state.verseCache[verse.id];
+    if (cached && Array.isArray(cached[translation]) && cached[translation].length > 0) {
+      return cached[translation];
+    }
+    if (verse.translations && Array.isArray(verse.translations[translation]) && verse.translations[translation].length > 0) {
+      return verse.translations[translation];
+    }
+    return null;
   }
 
   function getFilteredVerses() {
@@ -357,8 +539,7 @@
 
   function refillShuffleBag(excludeId) {
     const pool = getFilteredVerses();
-    let ids = pool.map((v) => v.id);
-    ids = shuffleArray(ids);
+    let ids = shuffleArray(pool.map((v) => v.id));
     if (excludeId && ids.length > 1 && ids[0] === excludeId) {
       const first = ids.shift();
       ids.push(first);
@@ -366,7 +547,24 @@
     state.shuffleBag = ids;
   }
 
-  function pickNextRandomVerse() {
+  async function pickNextRandomVerse() {
+    if (state.category === 'Entire Bible') {
+      const loadId = ++state.currentLoadId;
+      showLoadingState('Random Verse', 'Entire Bible');
+      try {
+        const verseObj = await fetchRandomVerseFromBolls(state.translation);
+        if (state.currentLoadId !== loadId) return;
+        loadVerse(verseObj);
+      } catch (err) {
+        if (state.currentLoadId !== loadId) return;
+        // Fallback to picking a curated reference so the missing panel has a concrete Bible Gateway link
+        const fallback = BIBLE_VERSES[Math.floor(Math.random() * BIBLE_VERSES.length)];
+        state.currentVerse = fallback;
+        showMissingTranslationPanel(fallback, err.message);
+      }
+      return;
+    }
+
     const excludeId = state.currentVerse ? state.currentVerse.id : null;
     if (state.shuffleBag.length === 0) {
       refillShuffleBag(excludeId);
@@ -389,52 +587,19 @@
   }
 
   /* ------------------------------------------------------------------------
-   * Translation Resolution & Tokenization
+   * Tokenization & Verse Loading
    * ---------------------------------------------------------------------- */
-  function getCachedSegments(verse, translation) {
-    if (verse.translations && Array.isArray(verse.translations[translation]) && verse.translations[translation].length > 0) {
-      return verse.translations[translation];
-    }
-    const cached = state.translationCache[verse.id];
-    if (cached && Array.isArray(cached[translation]) && cached[translation].length > 0) {
-      return cached[translation];
-    }
-    return null;
-  }
-
-  function getPassageSegments(verse) {
-    const exact = getCachedSegments(verse, state.translation);
-    if (exact) {
-      return {
-        segments: exact,
-        translationLabel: TRANSLATION_NAMES[state.translation],
-        isExactTranslation: true
-      };
-    }
-
-    if (verse.customSegments && verse.customSegments.length > 0) {
-      return {
-        segments: verse.customSegments,
-        translationLabel: verse.customTranslation || TRANSLATION_NAMES[state.translation],
-        isExactTranslation: true
-      };
-    }
-
-    // Fallback to built-in public-domain preview (WEB) until ESV API is connected or ESV/NIV text is pasted
-    const fallbackSegments = (verse.translations && (verse.translations.WEB || verse.translations.KJV)) || [];
-    return {
-      segments: fallbackSegments,
-      translationLabel: `${state.translation} (preview — public-domain text)`,
-      isExactTranslation: false
-    };
-  }
-
   function tokenizePassage(segments) {
     const tokens = [];
     const showVerseNums = segments.length > 1;
 
     segments.forEach((seg) => {
-      const words = seg.text.trim().split(/\s+/).filter(Boolean);
+      // Split words joined by em-dashes (e.g. "salvation—whom" -> "salvation—", "whom") for smoother typing
+      const prepared = seg.text
+        .replace(/([A-Za-z0-9])—([A-Za-z0-9])/g, '$1— $2')
+        .trim();
+      const words = prepared.split(/\s+/).filter(Boolean);
+
       words.forEach((word, idx) => {
         const canonical = normalizeWord(word);
         if (!canonical && tokens.length > 0) {
@@ -455,61 +620,58 @@
     return tokens;
   }
 
-  function updateTranslationBanner(verse, isExactTranslation, statusMessage) {
-    if (isExactTranslation) {
-      els.translationBanner.hidden = true;
-      return;
-    }
+  function showLoadingState(reference, category) {
+    state.isLoading = true;
+    state.isMissingTranslation = false;
 
-    const { verseUrl } = buildSourceLinks(verse, state.translation);
-    els.bannerBgLink.href = verseUrl;
-    els.bannerBgLink.textContent = `Open ${state.translation} on Bible Gateway ↗`;
-    els.bannerPasteBtn.textContent = `Paste ${state.translation}`;
-    els.bannerApiBtn.hidden = state.translation !== 'ESV';
+    els.verseReference.textContent = reference;
+    els.verseCategory.textContent = category;
+    els.verseTranslationLabel.textContent = TRANSLATION_NAMES[state.translation];
+    els.wordCounter.textContent = 'Loading...';
+    els.hintCounter.hidden = true;
+    els.progressFill.style.width = '0%';
 
-    if (statusMessage) {
-      els.translationBannerText.textContent = statusMessage;
-    } else if (state.translation === 'ESV') {
-      els.translationBannerText.textContent =
-        'Using public-domain preview text. Connect your free ESV API key (api.esv.org) to auto-load exact ESV, or paste the ESV verse.';
-    } else {
-      els.translationBannerText.textContent =
-        'Using public-domain preview text. Open NIV on Bible Gateway and paste it once to save exact NIV wording for this verse.';
-    }
-
-    els.translationBanner.hidden = false;
+    els.loadingText.textContent = `Fetching ${reference} (${state.translation}) from Bolls Bible API...`;
+    els.loadingPanel.hidden = false;
+    els.missingTransPanel.hidden = true;
+    els.verseCanvas.hidden = true;
+    els.practiceControls.hidden = true;
+    els.completionPanel.hidden = true;
   }
 
-  function loadVerse(verse) {
+  async function loadVerse(verse, forceRefetch) {
     state.currentVerse = verse;
     const loadId = ++state.currentLoadId;
+    const categoryText = verse.isMultiVerse ? `${verse.category} · Multi-Verse` : verse.category;
 
-    const { segments, translationLabel, isExactTranslation } = getPassageSegments(verse);
-    applyLoadedSegments(verse, segments, translationLabel, isExactTranslation);
+    if (!forceRefetch) {
+      const cached = getCachedSegments(verse, state.translation);
+      if (cached) {
+        startPracticeWithSegments(verse, cached);
+        return;
+      }
+    }
 
-    // If ESV is active, not yet cached, and user has saved an ESV API key, auto-fetch exact ESV
-    if (!isExactTranslation && state.translation === 'ESV' && state.esvToken) {
-      updateTranslationBanner(verse, false, `Loading ${verse.reference} (ESV) from api.esv.org...`);
-      fetchEsvPassage(verse.reference, state.esvToken)
-        .then((result) => {
-          if (state.currentLoadId !== loadId) return;
-          if (!state.translationCache[verse.id]) state.translationCache[verse.id] = {};
-          state.translationCache[verse.id].ESV = result.segments;
-          saveTranslationCache();
-          applyLoadedSegments(verse, result.segments, TRANSLATION_NAMES.ESV, true);
-        })
-        .catch((err) => {
-          if (state.currentLoadId !== loadId) return;
-          updateTranslationBanner(
-            verse,
-            false,
-            `${err.message || 'Could not reach api.esv.org.'} Showing public-domain preview.`
-          );
-        });
+    showLoadingState(verse.reference, categoryText);
+
+    try {
+      const segments = await fetchPassageFromBolls(verse, state.translation);
+      if (state.currentLoadId !== loadId) return;
+
+      if (!state.verseCache[verse.id]) state.verseCache[verse.id] = {};
+      state.verseCache[verse.id][state.translation] = segments;
+      saveVerseCache();
+
+      startPracticeWithSegments(verse, segments);
+    } catch (err) {
+      if (state.currentLoadId !== loadId) return;
+      showMissingTranslationPanel(verse, err.message);
     }
   }
 
-  function applyLoadedSegments(verse, segments, translationLabel, isExactTranslation) {
+  function startPracticeWithSegments(verse, segments) {
+    state.isLoading = false;
+    state.isMissingTranslation = false;
     state.tokens = tokenizePassage(segments);
     state.hintsUsed = 0;
     state.recalledCount = 0;
@@ -528,12 +690,13 @@
     els.verseCategory.textContent = verse.isMultiVerse
       ? `${verse.category} · Multi-Verse`
       : verse.category;
-    els.verseTranslationLabel.textContent = translationLabel;
+    els.verseTranslationLabel.textContent = TRANSLATION_NAMES[state.translation];
 
-    updateTranslationBanner(verse, isExactTranslation);
-
-    els.completionPanel.hidden = true;
+    els.loadingPanel.hidden = true;
+    els.missingTransPanel.hidden = true;
+    els.verseCanvas.hidden = false;
     els.practiceControls.hidden = false;
+    els.completionPanel.hidden = true;
 
     renderFullVerseFlow();
     updateCounters();
@@ -543,6 +706,44 @@
     } else {
       focusInput();
     }
+  }
+
+  function showMissingTranslationPanel(verse, errorReason) {
+    state.isLoading = false;
+    state.isMissingTranslation = true;
+
+    const trans = state.translation;
+    const { verseUrl } = buildSourceLinks(verse, trans);
+
+    els.verseReference.textContent = verse.reference;
+    els.verseCategory.textContent = verse.isMultiVerse
+      ? `${verse.category} · Multi-Verse`
+      : verse.category;
+    els.verseTranslationLabel.textContent = TRANSLATION_NAMES[trans];
+
+    els.progressFill.style.width = '0%';
+    els.wordCounter.textContent = `${trans} unavailable`;
+    els.hintCounter.hidden = true;
+
+    els.loadingPanel.hidden = true;
+    els.verseCanvas.hidden = true;
+    els.practiceControls.hidden = true;
+    els.completionPanel.hidden = true;
+
+    els.missingTransTitle.textContent = `Could not auto-load ${verse.reference} (${trans})`;
+    els.missingTransDesc.textContent = errorReason
+      ? `${errorReason} You can retry, switch to ESV, or paste the exact ${trans} text from Bible Gateway below (saved locally in your browser).`
+      : `Open ${verse.reference} (${trans}) on Bible Gateway and paste it below to save it for offline practice.`;
+
+    els.missingBgLink.href = verseUrl;
+    els.missingBgLinkLabel.textContent = `Open ${verse.reference} (${trans}) on Bible Gateway`;
+    els.missingSwitchEsvBtn.hidden = trans === 'ESV';
+
+    els.inlinePasteInput.value = '';
+    els.inlinePasteInput.placeholder = `Paste ${verse.reference} (${trans}) text here...`;
+    els.inlinePasteError.hidden = true;
+
+    els.missingTransPanel.hidden = false;
   }
 
   /* ------------------------------------------------------------------------
@@ -629,7 +830,7 @@
 
   function renderRemainingBlanks() {
     els.verseFlow.querySelectorAll('.word-blank').forEach((b) => b.remove());
-    if (!state.showBlanks || state.completed) return;
+    if (!state.showBlanks || state.completed || state.isMissingTranslation || state.isLoading) return;
 
     const remaining = state.tokens.length - state.currentIndex - 1;
     const frag = document.createDocumentFragment();
@@ -720,7 +921,7 @@
   }
 
   function focusInput() {
-    if (wordInput && !state.completed && !isOverlayOpen()) {
+    if (wordInput && !state.completed && !state.isMissingTranslation && !state.isLoading && !isOverlayOpen()) {
       wordInput.focus({ preventScroll: false });
     }
   }
@@ -729,7 +930,7 @@
    * Typing & Tab-Hint Logic
    * ---------------------------------------------------------------------- */
   function handleWordInput() {
-    if (state.completed || !wordInput) return;
+    if (state.completed || state.isMissingTranslation || state.isLoading || !wordInput) return;
 
     const raw = wordInput.value;
 
@@ -776,7 +977,7 @@
   }
 
   function handleInputKeydown(e) {
-    if (state.completed) return;
+    if (state.completed || state.isMissingTranslation || state.isLoading) return;
 
     if (e.key === ' ' || e.key === 'Enter') {
       const raw = wordInput.value;
@@ -806,7 +1007,7 @@
   }
 
   function revealNextWord() {
-    if (state.completed || state.currentIndex >= state.tokens.length) return;
+    if (state.completed || state.isMissingTranslation || state.isLoading || state.currentIndex >= state.tokens.length) return;
     const word = state.tokens[state.currentIndex].display;
     commitCurrentToken('hinted');
     announce(`Revealed: ${word}`);
@@ -879,8 +1080,8 @@
     els.segBtns.forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.translation === state.translation);
     });
+    els.lookupTransHint.textContent = state.translation;
     els.streakCount.textContent = String(state.sessionCompleted);
-    els.esvTokenInput.value = state.esvToken;
     els.pasteTransSelect.value = state.translation;
 
     els.blanksToggleBtn.setAttribute('aria-pressed', String(state.showBlanks));
@@ -917,12 +1118,12 @@
     const query = (els.librarySearch.value || '').trim().toLowerCase();
     const all = getAllVerses();
     const masteredCount = all.filter((v) => state.progress[v.id]?.bestAccuracy === 100).length;
-    els.librarySummary.textContent = `${all.length} passages · ${masteredCount} mastered at 100%`;
+    els.librarySummary.textContent = `${all.length} curated passages · ${masteredCount} mastered at 100%`;
 
     const filtered = all.filter((v) => {
       if (!query) return true;
-      const { segments } = getPassageSegments(v);
-      const preview = segments.map((s) => s.text).join(' ').toLowerCase();
+      const segs = getCachedSegments(v, state.translation);
+      const preview = segs ? segs.map((s) => s.text).join(' ').toLowerCase() : '';
       return (
         v.reference.toLowerCase().includes(query) ||
         v.category.toLowerCase().includes(query) ||
@@ -936,7 +1137,7 @@
       const empty = document.createElement('p');
       empty.className = 'field-help';
       empty.style.padding = '16px';
-      empty.textContent = 'No matching verses found. Use "+ Add / ESV API" to load or paste any passage.';
+      empty.textContent = 'No matching verses found. Use "+ Look Up" to load any verse from the Bible.';
       els.libraryList.appendChild(empty);
       return;
     }
@@ -949,8 +1150,10 @@
         btn.classList.add('is-active');
       }
 
-      const { segments, isExactTranslation } = getPassageSegments(verse);
-      const previewText = segments.map((s) => s.text).join(' ');
+      const segs = getCachedSegments(verse, state.translation);
+      const previewText = segs
+        ? segs.map((s) => s.text).join(' ')
+        : `Click to fetch ${verse.reference} (${state.translation})`;
       const prog = state.progress[verse.id];
 
       const top = document.createElement('div');
@@ -975,8 +1178,8 @@
       const meta = document.createElement('div');
       meta.className = 'library-meta-row';
       const cat = document.createElement('span');
-      const savedTag = isExactTranslation ? ` · ${state.translation} saved` : '';
-      cat.textContent = `${verse.isMultiVerse ? `${verse.category} · Multi-Verse` : verse.category}${savedTag}`;
+      const cachedTag = segs ? ' · cached' : '';
+      cat.textContent = `${verse.isMultiVerse ? `${verse.category} · Multi-Verse` : verse.category}${cachedTag}`;
       meta.appendChild(cat);
 
       if (verse.isCustom) {
@@ -1007,7 +1210,7 @@
   }
 
   /* ------------------------------------------------------------------------
-   * Custom / ESV API Modal
+   * Look Up / Paste Modal & Inline Paste
    * ---------------------------------------------------------------------- */
   function updatePasteHelperLink() {
     const ref = els.pasteRefInput.value.trim() || (state.currentVerse ? state.currentVerse.reference : 'Psalm 23:4');
@@ -1016,22 +1219,14 @@
     els.pasteBgHelper.textContent = `Open ${ref} (${trans}) on Bible Gateway ↗`;
   }
 
-  function openCustomModal(defaultTab, prefillCurrent) {
+  function openCustomModal(defaultTab) {
     els.customModalBackdrop.hidden = false;
     els.lookupError.hidden = true;
-    els.lookupSuccess.hidden = true;
     els.pasteError.hidden = true;
-    els.esvTokenInput.value = state.esvToken;
+    els.lookupTransHint.textContent = state.translation;
     els.pasteTransSelect.value = state.translation;
-
-    if (prefillCurrent && state.currentVerse) {
-      els.pasteRefInput.value = state.currentVerse.reference;
-    } else if (!els.pasteRefInput.value) {
-      els.pasteRefInput.value = '';
-    }
     updatePasteHelperLink();
-
-    switchModalTab(defaultTab || (state.translation === 'ESV' ? 'esv-api' : 'paste'));
+    switchModalTab(defaultTab || 'lookup');
   }
 
   function closeCustomModal() {
@@ -1046,122 +1241,94 @@
       tab.setAttribute('aria-selected', String(active));
     });
 
-    if (tabName === 'esv-api') {
+    if (tabName === 'lookup') {
       els.lookupForm.hidden = false;
       els.pasteForm.hidden = true;
-      if (!state.esvToken) {
-        els.esvTokenInput.focus();
-      } else {
-        els.lookupRefInput.focus();
-      }
+      els.lookupRefInput.focus();
     } else {
       els.lookupForm.hidden = true;
       els.pasteForm.hidden = false;
-      if (els.pasteRefInput.value) {
-        els.pasteTextInput.focus();
-      } else {
-        els.pasteRefInput.focus();
-      }
-    }
-  }
-
-  function handleSaveToken() {
-    const token = els.esvTokenInput.value.trim();
-    state.esvToken = token;
-    saveEsvToken();
-
-    els.lookupError.hidden = true;
-    els.lookupSuccess.textContent = token
-      ? 'ESV API key saved! ESV passages will now load automatically.'
-      : 'ESV API key cleared.';
-    els.lookupSuccess.hidden = false;
-
-    if (token && state.translation === 'ESV' && state.currentVerse) {
-      loadVerse(state.currentVerse);
+      els.pasteRefInput.focus();
     }
   }
 
   async function handleLookupSubmit(e) {
     e.preventDefault();
-    const token = els.esvTokenInput.value.trim();
-    const ref = els.lookupRefInput.value.trim();
+    const rawRef = els.lookupRefInput.value.trim();
+    if (!rawRef) return;
 
     els.lookupError.hidden = true;
-    els.lookupSuccess.hidden = true;
-
-    if (!token) {
-      els.lookupError.textContent = 'Enter your free ESV API token from api.esv.org first, or use the "Paste ESV / NIV" tab.';
+    const parsed = parseReference(rawRef);
+    if (!parsed) {
+      els.lookupError.textContent = 'Enter a reference with book, chapter, and verse (e.g. Psalm 23:4 or 1 Cor 13:4-7).';
       els.lookupError.hidden = false;
-      return;
-    }
-
-    // Save token if changed
-    if (token !== state.esvToken) {
-      state.esvToken = token;
-      saveEsvToken();
-    }
-
-    // If user didn't enter a specific reference, refresh the current verse in ESV and close
-    if (!ref) {
-      state.translation = 'ESV';
-      savePrefs();
-      applyControlStates();
-      closeCustomModal();
-      if (state.currentVerse) loadVerse(state.currentVerse);
       return;
     }
 
     els.lookupSubmitBtn.disabled = true;
-    els.lookupSubmitBtn.textContent = 'Loading ESV...';
+    els.lookupSubmitBtn.textContent = 'Loading...';
 
     try {
-      const result = await fetchEsvPassage(ref, token);
-      const parsed = parseBookAndChapter(result.canonical);
+      const tempVerse = {
+        id: `custom-bolls-${parsed.bookId}-${parsed.chapter}-${parsed.verses.join('-')}`,
+        reference: parsed.reference,
+        book: parsed.book,
+        bookId: parsed.bookId,
+        chapter: parsed.chapter,
+        verses: parsed.verses,
+        category: 'Custom',
+        isMultiVerse: parsed.isMultiVerse,
+        isCustom: true
+      };
 
-      // Check if it matches an existing curated verse
+      const segments = await fetchPassageFromBolls(tempVerse, state.translation);
+
       const existing = getAllVerses().find(
-        (v) => v.reference.toLowerCase() === result.canonical.toLowerCase()
+        (v) => v.reference.toLowerCase() === parsed.reference.toLowerCase()
       );
+      const targetVerse = existing || tempVerse;
 
-      state.translation = 'ESV';
-      savePrefs();
-      applyControlStates();
+      if (!state.verseCache[targetVerse.id]) state.verseCache[targetVerse.id] = {};
+      state.verseCache[targetVerse.id][state.translation] = segments;
+      saveVerseCache();
 
-      if (existing) {
-        if (!state.translationCache[existing.id]) state.translationCache[existing.id] = {};
-        state.translationCache[existing.id].ESV = result.segments;
-        saveTranslationCache();
-        els.lookupRefInput.value = '';
-        closeCustomModal();
-        loadVerse(existing);
-      } else {
-        const newVerse = {
-          id: `custom-esv-${Date.now()}`,
-          reference: result.canonical,
-          book: parsed.book,
-          chapter: parsed.chapter,
-          category: 'Custom',
-          isMultiVerse: result.segments.length > 1,
-          isCustom: true,
-          translations: {
-            ESV: result.segments
-          }
-        };
-        state.customVerses.unshift(newVerse);
+      if (!existing) {
+        state.customVerses.unshift(targetVerse);
         saveCustomVerses();
-        els.lookupRefInput.value = '';
-        closeCustomModal();
-        loadVerse(newVerse);
       }
+
+      els.lookupRefInput.value = '';
+      closeCustomModal();
+      startPracticeWithSegments(targetVerse, segments);
     } catch (err) {
-      els.lookupError.textContent = err.message && err.message !== 'Failed to fetch'
-        ? err.message
-        : 'Unable to reach api.esv.org (check your internet connection or API key).';
+      els.lookupError.textContent = `${err.message || 'Lookup failed.'} You can also paste the text in the "Paste Text" tab.`;
       els.lookupError.hidden = false;
     } finally {
       els.lookupSubmitBtn.disabled = false;
-      els.lookupSubmitBtn.textContent = 'Load ESV Passage';
+      els.lookupSubmitBtn.textContent = 'Load Passage';
     }
+  }
+
+  function handleInlinePasteSubmit(e) {
+    e.preventDefault();
+    if (!state.currentVerse) return;
+
+    const rawText = els.inlinePasteInput.value.trim();
+    const segments = parsePastedPassage(rawText);
+    const wordCount = segments.map((s) => s.text).join(' ').split(/\s+/).filter(Boolean).length;
+
+    if (wordCount < 2) {
+      els.inlinePasteError.textContent = 'Please paste at least two words of verse text.';
+      els.inlinePasteError.hidden = false;
+      return;
+    }
+
+    if (!state.verseCache[state.currentVerse.id]) {
+      state.verseCache[state.currentVerse.id] = {};
+    }
+    state.verseCache[state.currentVerse.id][state.translation] = segments;
+    saveVerseCache();
+    startPracticeWithSegments(state.currentVerse, segments);
   }
 
   function handlePasteSubmit(e) {
@@ -1178,48 +1345,48 @@
       return;
     }
 
-    // Switch active translation to the one they just pasted
     state.translation = trans;
     savePrefs();
     applyControlStates();
 
-    // If this reference matches an existing verse in our deck, attach this ESV/NIV text to it
     const existing = getAllVerses().find(
       (v) => v.reference.toLowerCase() === ref.toLowerCase()
     );
 
     if (existing) {
-      if (!state.translationCache[existing.id]) state.translationCache[existing.id] = {};
-      state.translationCache[existing.id][trans] = segments;
-      saveTranslationCache();
+      if (!state.verseCache[existing.id]) state.verseCache[existing.id] = {};
+      state.verseCache[existing.id][trans] = segments;
+      saveVerseCache();
       els.pasteRefInput.value = '';
       els.pasteTextInput.value = '';
       closeCustomModal();
-      loadVerse(existing);
+      startPracticeWithSegments(existing, segments);
       return;
     }
 
-    const parsed = parseBookAndChapter(ref);
+    const parsedFull = parseReference(ref);
+    const parsedBC = parseBookAndChapter(ref);
     const versePart = ref.includes(':') ? ref.split(':')[1] : '';
     const newVerse = {
       id: `custom-paste-${Date.now()}`,
-      reference: ref,
-      book: parsed.book,
-      chapter: parsed.chapter,
+      reference: parsedFull ? parsedFull.reference : ref,
+      book: parsedFull ? parsedFull.book : parsedBC.book,
+      bookId: parsedFull ? parsedFull.bookId : null,
+      chapter: parsedFull ? parsedFull.chapter : parsedBC.chapter,
+      verses: parsedFull ? parsedFull.verses : null,
       category: 'Custom',
       isMultiVerse: segments.length > 1 || /[-–,]/.test(versePart),
-      isCustom: true,
-      translations: {
-        [trans]: segments
-      }
+      isCustom: true
     };
 
+    state.verseCache[newVerse.id] = { [trans]: segments };
+    saveVerseCache();
     state.customVerses.unshift(newVerse);
     saveCustomVerses();
     els.pasteRefInput.value = '';
     els.pasteTextInput.value = '';
     closeCustomModal();
-    loadVerse(newVerse);
+    startPracticeWithSegments(newVerse, segments);
   }
 
   /* ------------------------------------------------------------------------
@@ -1256,9 +1423,18 @@
       savePrefs();
     });
 
-    // Translation banner buttons
-    els.bannerApiBtn.addEventListener('click', () => openCustomModal('esv-api', false));
-    els.bannerPasteBtn.addEventListener('click', () => openCustomModal('paste', true));
+    // Missing / Retry fallback panel
+    els.missingRetryBtn.addEventListener('click', () => {
+      if (state.currentVerse) loadVerse(state.currentVerse, true);
+    });
+    els.inlinePasteForm.addEventListener('submit', handleInlinePasteSubmit);
+    els.missingSkipBtn.addEventListener('click', () => pickNextRandomVerse());
+    els.missingSwitchEsvBtn.addEventListener('click', () => {
+      state.translation = 'ESV';
+      savePrefs();
+      applyControlStates();
+      if (state.currentVerse) loadVerse(state.currentVerse);
+    });
 
     els.verseCanvas.addEventListener('click', () => {
       focusInput();
@@ -1306,8 +1482,8 @@
     els.libraryBackdrop.addEventListener('click', closeLibrary);
     els.librarySearch.addEventListener('input', renderLibraryList);
 
-    // Custom / ESV API modal
-    els.openCustomBtn.addEventListener('click', () => openCustomModal(null, false));
+    // Look Up / Paste modal
+    els.openCustomBtn.addEventListener('click', () => openCustomModal('lookup'));
     els.closeCustomBtn.addEventListener('click', closeCustomModal);
     els.cancelLookupBtn.addEventListener('click', closeCustomModal);
     els.cancelPasteBtn.addEventListener('click', closeCustomModal);
@@ -1317,7 +1493,6 @@
     els.modalTabs.forEach((tab) => {
       tab.addEventListener('click', () => switchModalTab(tab.dataset.tab));
     });
-    els.saveTokenBtn.addEventListener('click', handleSaveToken);
     els.lookupForm.addEventListener('submit', handleLookupSubmit);
     els.pasteForm.addEventListener('submit', handlePasteSubmit);
     els.pasteRefInput.addEventListener('input', updatePasteHelperLink);
@@ -1336,7 +1511,7 @@
         }
       }
 
-      if (isOverlayOpen()) return;
+      if (isOverlayOpen() || state.isMissingTranslation || state.isLoading) return;
 
       if (e.key === 'Tab' && !state.completed) {
         e.preventDefault();
